@@ -142,8 +142,8 @@ class HFLM(TemplateLM):
                     eval_logger.info("Device not specified")
                     eval_logger.info(f"Cuda Available? {torch.cuda.is_available()}")
                     self._device = (
-                        torch.device("cuda")
-                        if torch.cuda.is_available()
+                        torch.device("mps")
+                        if torch.backends.mps.is_available()
                         else torch.device("cpu")
                     )
             else:  # Parallelism managed by accelerate

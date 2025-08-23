@@ -33,6 +33,19 @@ class MoRLlamaDecoderLayer(nn.Module):
         self.num_recursion = cfg.recursive.num_recursion
         assert len(block_list) == self.num_recursion, "Number of recursion should be equal to number of blocks"
         
+        # Add depth embedding for recursion tracking (configurable)
+        max_recursions = getattr(cfg.mor, "max_recursions", self.num_recursion)
+        depth_embed_dim = getattr(cfg.mor, "depth_embed_dim", config.hidden_size)
+        self.depth_embed_strategy = getattr(cfg.mor, "depth_embed_strategy", "add")
+        self.use_depth_embedding = getattr(cfg.mor, "use_depth_embedding", True) and self.depth_embed_strategy != "none"
+        
+        if self.use_depth_embedding:
+            self.depth_embedding = nn.Embedding(max_recursions, depth_embed_dim)
+            if self.depth_embed_strategy == "add" and depth_embed_dim != config.hidden_size:
+                self.depth_add_proj = nn.Linear(depth_embed_dim, config.hidden_size)
+            elif self.depth_embed_strategy == "concat":
+                self.depth_concat_proj = nn.Linear(config.hidden_size + depth_embed_dim, config.hidden_size)
+        
         torch_dtype = get_torch_dtype(cfg)
         
         if not cfg.mor.rand_router:
@@ -135,16 +148,26 @@ class MoRLlamaDecoderLayer(nn.Module):
             head_dim = position_embeddings[0].shape[-1]            
             new_position_embeddings = ()
             
+            # Optional RoPE depth shift per recursion index
+            rope_shift = 0
+            if getattr(self.cfg.mor, "rope_depth_shift", False):
+                scale = float(getattr(self.cfg.mor, "rope_depth_shift_scale", 1.0))
+                rope_shift = int(round(scale * (index or 0)))
+            
             for i, emb in enumerate(position_embeddings):
                 new_position_embeddings += (torch.zeros(
                     (new_bs, new_seq_len, head_dim),
                     dtype=emb.dtype,
                     device=emb.device,
                 ),)
+                # emb is shape (1, seq, head_dim) typically
+                base_seq_emb = emb[0]
+                if rope_shift != 0:
+                    base_seq_emb = torch.roll(base_seq_emb, shifts=rope_shift, dims=0)
                 for b in range(new_bs):
                     indices = selected_seq_indices[b]
                     s = indices.numel()
-                    new_position_embeddings[i][b, :s] = torch.gather(emb[0], dim=0, index=indices.view(s, 1).expand(-1, head_dim))
+                    new_position_embeddings[i][b, :s] = torch.gather(base_seq_emb, dim=0, index=indices.view(s, 1).expand(-1, head_dim))
         
         new_cache_position = None                    
         if cache_position is not None:
@@ -172,9 +195,27 @@ class MoRLlamaDecoderLayer(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         prev_selected_tokens: Optional[torch.LongTensor] = None,
+        recursion_depth: Optional[int] = None,  # Add recursion depth parameter
         **kwargs: Unpack[FlashAttentionKwargs]
     ):
         bs, seq_len, hidden_dim =  x.shape
+        
+        # Add depth embedding if enabled and recursion_depth is provided
+        if recursion_depth is not None and getattr(self, "use_depth_embedding", False):
+            depth_idx = torch.tensor(recursion_depth, device=x.device)
+            depth_emb = self.depth_embedding(depth_idx)
+            if self.depth_embed_strategy == "add":
+                de = depth_emb
+                if hasattr(self, "depth_add_proj"):
+                    de = self.depth_add_proj(de)
+                x = x + de.to(x.dtype).unsqueeze(0).unsqueeze(0)
+            elif self.depth_embed_strategy == "concat":
+                de = depth_emb.to(x.dtype).unsqueeze(0).unsqueeze(0).expand(bs, seq_len, -1)
+                x = self.depth_concat_proj(torch.cat([x, de], dim=-1))
+            elif self.depth_embed_strategy == "none":
+                pass
+            else:
+                raise ValueError(f"Unknown depth_embed_strategy: {self.depth_embed_strategy}")
                 
         if self.training:
             self.training_step += 1

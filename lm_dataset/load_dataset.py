@@ -24,6 +24,8 @@ LM_DATASETS = {
     "math_code_pile": {"path": f"{DATA_DIR}/math-code-pile", "split": "train"}, 
     "starcoderdata": {"path": f"{DATA_DIR}/starcoderdata", "split": "train"},  # "data_dir": "python", 
     "finemath": {"path": f"{DATA_DIR}/finemath", "split": "train"},  # "name": "finemath-4plus", 
+    # Small remote dataset for quick local/MPS debug
+    "wikitext2": {"path": "wikitext", "name": "wikitext-2-raw-v1", "split": "train"},
 }
 
 # tokenizer used for pre-tokenization
@@ -42,21 +44,12 @@ def load_dataset_from_config(cfg, tokenizer):
     
     if all(ds in LM_DATASETS for ds in dataset_name):
         dataset_type = "lm"
-        # if "redpajama" in cfg.dataset and cfg.get("redpajama_path"):
-        #     os.environ["RED_PAJAMA_DATA_DIR"] = cfg.redpajama_path
-        # if "dolma" in cfg.dataset and cfg.get("dolma_path"):
-        #     os.environ["DATA_DIR"] = cfg.dolma_path
         
         train_dataset = []
         for ds in dataset_name:
             _dataset = load_dataset(**LM_DATASETS[ds], streaming=True)
             if ds == "starcoderdata":
-                # train_dataset.append(load_dataset(**LM_DATASETS[ds], num_proc=num_proc))
-                # train_dataset[-1] = train_dataset[-1].map(download_contents, input_columns="blob_id", num_proc=num_proc)
-                # train_dataset[-1] = train_dataset[-1].filter(lambda x: x["download_success"], num_proc=num_proc)
                 _dataset.rename_column("content", "text")
-            # if ds == "python_edu":
-            #     dataset_text_field.append("blob_id")
             train_dataset.append(_dataset)
         
         if len(train_dataset) == 1:
@@ -91,7 +84,9 @@ def load_dataset_from_config(cfg, tokenizer):
                                        transforms=transforms, 
                                        global_shuffling=cfg.get("global_shuffling", False),
                                        local_shuffling=cfg.get("local_shuffling", False),
-                                       add_bos_token=cfg.get("add_bos_token", False),)
+                                       add_bos_token=cfg.get("add_bos_token", False),
+                                       max_tokens=cfg.get("data_token_budget", None),
+                                       max_batches=cfg.get("data_batch_budget", None),)
     
     elif dataset_type == "token":
         if cfg.dataloader_num_workers <= 1:

@@ -6,7 +6,7 @@ wandb_entity: efficient-ai-projects
 wandb_project: mixture-of-recursions
 wandb_run_name: null
 output_dir: null
-wandb_run_id: null  # run `python util/generate_wandb_run_id.py` to generate a new id
+wandb_run_id: null # run `python util/generate_wandb_run_id.py` to generate a new id
 
 tensorboard: false
 tensorboard_dir: null
@@ -25,6 +25,9 @@ add_bos_token: false
 global_shuffling: false
 local_shuffling: false
 tokenizer: smollm
+# Explicit toggle to permit online lookups when pre-populating cache.
+# Set to false when running fully offline after cache is warm.
+local_files_only: false
 
 model: smollm
 model_name_or_path: HuggingFaceTB/SmolLM-360M
@@ -36,7 +39,7 @@ recursive:
   enable: true
   base_depth: null
   num_recursion: 2
-  sharing: cycle  # cycle, sequence, middle_cycle, middle_sequence
+  sharing: cycle # cycle, sequence, middle_cycle, middle_sequence
   ln_share: true
   initialization: stepwise
 
@@ -50,42 +53,49 @@ kv_sharing:
 relaxation:
   enable: false
   skip_first_loop: false
-  method: lora  # lora, dora, adaption_prompt, recursion_encoding
-  lora:  # lora and dora
+  method: lora # lora, dora, adaption_prompt, recursion_encoding
+  lora: # lora and dora
     r: 16
     alpha: 32
     dropout: 0.1
-    target_modules: ['q_proj', 'v_proj']
+    target_modules: ["q_proj", "v_proj"]
     rank_pattern: null
-    alpha_pattern: 2.0  # alpha will be set to rank * alpha_pattern
+    alpha_pattern: 2.0 # alpha will be set to rank * alpha_pattern
     svd_init: false
-  prompt:  # adaption_prompt
-    len: 16  # adapter_len for adaption_prompt
+  prompt: # adaption_prompt
+    len: 16 # adapter_len for adaption_prompt
 
 mor:
   enable: false
-  type: expert  # expert, token
+  type: expert # expert, token
   capacity: null
-  rand_router: false  # whether to use random router
-  router_type: linear  # linear, mlp, wide_mlp
-  z_loss: false  # whether to use z-loss
-  z_coeff: 0.00001  # coefficient for z-loss
-  temp: 1.0  # temperature for router logits
+  rand_router: false # whether to use random router
+  router_type: linear # linear, mlp, wide_mlp
+  z_loss: false # whether to use z-loss
+  z_coeff: 0.00001 # coefficient for z-loss
+  temp: 1.0 # temperature for router logits
+  # New options
+  use_depth_embedding: true # set false or set depth_embed_strategy: none to disable
+  depth_embed_dim: null # defaults to hidden_size when null
+  depth_embed_strategy: add # add, concat, or none
+  max_recursions: null # defaults to recursive.num_recursion when null
+  rope_depth_shift: false # enable depth-dependent RoPE shift
+  rope_depth_shift_scale: 1.0 # shift per depth = round(scale * depth)
   expert:
-    cap_warmup_step: 0  # number of forward function calls for capacity warmup
-    router_func: sigmoid  # null, sigmoid, tanh
-    alpha: 0.1  # max_value for router weights
-    sampling: aux_loss  # null, aux_router, aux_loss
-    include_first: true 
+    cap_warmup_step: 0 # number of forward function calls for capacity warmup
+    router_func: sigmoid # null, sigmoid, tanh
+    alpha: 0.1 # max_value for router weights
+    sampling: aux_loss # null, aux_router, aux_loss
+    include_first: true
     coeff: 0.001 # coefficient for aux_loss
     gating: weighted # weighted, additive
   token:
-    bal_warmup_step: 0  # number of forward function calls for balance warmup
-    router_func: softmax  # sigmoid, softmax
+    bal_warmup_step: 0 # number of forward function calls for balance warmup
+    router_func: softmax # sigmoid, softmax
     alpha: 1.0
-    balancing: loss  # loss, loss_free
-    coeff: 0.1  # coefficient for balancing loss
-    u: 0.001  # bias update rate for loss_free balancing
+    balancing: loss # loss, loss_free
+    coeff: 0.1 # coefficient for balancing loss
+    u: 0.001 # bias update rate for loss_free balancing
     gating: weighted # weighted, additive
 
 # lr_scheduler_type: cosine_with_min_lr
@@ -95,7 +105,7 @@ mor:
 lr_scheduler_type: warmup_stable_decay
 lr_scheduler_kwargs:
   num_decay_steps: 0
-  decay_type: linear 
+  decay_type: linear
 learning_rate: 3e-3
 adam_beta1: 0.9
 adam_beta2: 0.95
@@ -105,7 +115,7 @@ max_grad_norm: 1.0
 
 num_train_steps: 2384
 stop_steps: 2384
-num_warmup_steps: null  # 5% of num_train_steps will be used if null
+num_warmup_steps: null # 5% of num_train_steps will be used if null
 save_interval: 0.25
 save_steps: null
 fixed_save_steps: null
@@ -113,7 +123,7 @@ save_total_limit: null
 logging_steps: 100
 dataloader_num_workers: 0
 gradient_checkpointing: false
-deepspeed: ds_configs/stage2.config  # stage2_cosine_lr_schedule.config
+deepspeed: ds_configs/stage2.config # stage2_cosine_lr_schedule.config
 
 evaluation:
   enable: false

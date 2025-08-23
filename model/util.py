@@ -24,10 +24,11 @@ MOR_MODEL_CLS = {
     "smollm2": MoRLlamaForCausalLM,
 }
 
-if "wandb_mode" not in os.environ:
-    local_files_only = True
+# Use WANDB_MODE if present; default to allowing downloads (local_files_only=False)
+if "WANDB_MODE" in os.environ:
+    local_files_only = os.environ["WANDB_MODE"].lower() == "offline"
 else:
-    local_files_only = os.environ["WANDB_MODE"] == "offline"
+    local_files_only = False
 
 
 def get_torch_dtype(cfg: DictConfig):

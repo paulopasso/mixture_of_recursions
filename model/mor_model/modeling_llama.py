@@ -238,6 +238,17 @@ class MoRLlamaModel(LlamaModel):
                 )
             else:
                 if hasattr(decoder_layer, "mor") and decoder_layer.mor:
+                    # Determine recursion depth based on layer index and sharing strategy
+                    recursion_depth = None
+                    if hasattr(self.config, "kv_sharing") and self.config.kv_sharing is not None:
+                        num_recursion = self.config.kv_sharing.get("num_recursion", 1)
+                        if hasattr(decoder_layer, "mor_type") and decoder_layer.mor_type == "expert":
+                            # For expert choice, each layer corresponds to a recursion depth
+                            recursion_depth = len([l for l in self.layers[:self.layers.index(decoder_layer)] if hasattr(l, "mor") and l.mor])
+                        elif hasattr(decoder_layer, "mor_type") and decoder_layer.mor_type == "token":
+                            # For token choice, recursion depth is determined by the current recursion cycle
+                            recursion_depth = len([l for l in self.layers[:self.layers.index(decoder_layer)] if hasattr(l, "mor") and l.mor])
+                    
                     layer_outputs = decoder_layer(
                         hidden_states,
                         attention_mask=causal_mask,
@@ -248,6 +259,7 @@ class MoRLlamaModel(LlamaModel):
                         cache_position=cache_position,
                         position_embeddings=position_embeddings,
                         prev_selected_tokens=prev_selected_tokens,
+                        recursion_depth=recursion_depth,  # Pass recursion depth
                         **flash_attn_kwargs,
                     )
                     if decoder_layer.mor_type == "expert":

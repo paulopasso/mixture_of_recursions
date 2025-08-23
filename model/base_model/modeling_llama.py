@@ -216,6 +216,8 @@ class LlamaAttention(nn.Module):
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
         self.hidden_size = config.hidden_size
+        self.num_heads = config.num_attention_heads
+        self.num_key_value_heads = getattr(config, "num_key_value_heads", self.num_heads)
 
         self.q_proj = nn.Linear(
             config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
@@ -230,6 +232,9 @@ class LlamaAttention(nn.Module):
             config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
         )
 
+        # Add depth embedding for recursion tracking
+        self.depth_embedding = None  # Will be initialized if needed
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -237,6 +242,7 @@ class LlamaAttention(nn.Module):
         attention_mask: Optional[torch.Tensor],
         past_key_value: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        recursion_depth: Optional[int] = None,  # Add recursion depth parameter
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         input_shape = hidden_states.shape[:-1]
@@ -248,6 +254,13 @@ class LlamaAttention(nn.Module):
 
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+        # Add depth embedding to query and key if available
+        if recursion_depth is not None and self.depth_embedding is not None:
+            depth_emb = self.depth_embedding(torch.tensor(recursion_depth, device=hidden_states.device))
+            depth_emb = depth_emb.view(1, 1, -1, self.head_dim).transpose(1, 2)  # [1, num_heads, 1, head_dim]
+            query_states = query_states + depth_emb
+            key_states = key_states + depth_emb
 
         if past_key_value is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
@@ -301,6 +314,7 @@ class LlamaDecoderLayer(nn.Module):
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        recursion_depth: Optional[int] = None,  # Add recursion depth parameter
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
@@ -317,6 +331,7 @@ class LlamaDecoderLayer(nn.Module):
             use_cache=use_cache,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
+            recursion_depth=recursion_depth,  # Pass recursion depth to attention
             **kwargs,
         )
         hidden_states = residual + hidden_states

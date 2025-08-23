@@ -310,6 +310,19 @@ def generate_configs(args: argparse.Namespace):
             conf.mor.z_coeff = 0.001
             warnings.warn("'zloss' is included in the name, but no z-loss coefficient is provided. Z-loss coefficient set to '0.001' by default.")  
 
+    # New: override MoR depth embedding and RoPE settings from CLI if provided
+    if "mor" in conf:
+        if getattr(args, "mor_depth_embed_dim", None) is not None:
+            conf.mor.depth_embed_dim = args.mor_depth_embed_dim
+        if getattr(args, "mor_depth_embed_strategy", None) is not None:
+            conf.mor.depth_embed_strategy = args.mor_depth_embed_strategy
+        if getattr(args, "mor_max_recursions", None) is not None:
+            conf.mor.max_recursions = args.mor_max_recursions
+        if getattr(args, "mor_rope_depth_shift", None) is not None:
+            conf.mor.rope_depth_shift = args.mor_rope_depth_shift
+        if getattr(args, "mor_rope_depth_shift_scale", None) is not None:
+            conf.mor.rope_depth_shift_scale = args.mor_rope_depth_shift_scale
+
     # save the configuration
     save_dir = os.path.join(PROJECT_ROOT, "conf/pretrain", f"{args.name}.yaml")
     OmegaConf.save(config=conf, f=save_dir)
@@ -323,6 +336,27 @@ def generate_configs(args: argparse.Namespace):
     # update name
     conf.name = args.name
     conf.model_name_or_path = f"pretrain/{args.name}"
+
+    # propagate MoR overrides to eval config as well
+    if "mor" in conf and any([
+        getattr(args, "mor_depth_embed_dim", None) is not None,
+        getattr(args, "mor_depth_embed_strategy", None) is not None,
+        getattr(args, "mor_max_recursions", None) is not None,
+        getattr(args, "mor_rope_depth_shift", None) is not None,
+        getattr(args, "mor_rope_depth_shift_scale", None) is not None,
+    ]):
+        if conf.get("mor") is None:
+            conf.mor = {}
+        if getattr(args, "mor_depth_embed_dim", None) is not None:
+            conf.mor.depth_embed_dim = args.mor_depth_embed_dim
+        if getattr(args, "mor_depth_embed_strategy", None) is not None:
+            conf.mor.depth_embed_strategy = args.mor_depth_embed_strategy
+        if getattr(args, "mor_max_recursions", None) is not None:
+            conf.mor.max_recursions = args.mor_max_recursions
+        if getattr(args, "mor_rope_depth_shift", None) is not None:
+            conf.mor.rope_depth_shift = args.mor_rope_depth_shift
+        if getattr(args, "mor_rope_depth_shift_scale", None) is not None:
+            conf.mor.rope_depth_shift_scale = args.mor_rope_depth_shift_scale
 
     # save the configuration
     save_dir = os.path.join(PROJECT_ROOT, "conf/eval_fewshot", f"{args.name}.yaml")
@@ -354,6 +388,18 @@ if __name__ == "__main__":
     parser.add_argument("--alpha_pattern", type=float, default=2.0)
     parser.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline"],
                         help="The online mode is used when you want to log locally, typically when no internet connection is available.")
+    # New MoR-specific overrides
+    parser.add_argument("--mor_depth_embed_dim", type=int, default=None,
+                        help="Depth embedding dimension for MoR depth encoding (defaults to hidden_size when omitted).")
+    parser.add_argument("--mor_depth_embed_strategy", type=str, default=None, choices=["add", "concat"],
+                        help="Strategy to combine depth embedding with hidden states: add or concat (default add).")
+    parser.add_argument("--mor_max_recursions", type=int, default=None,
+                        help="Embedding table size for depth embeddings (defaults to recursive.num_recursion when omitted).")
+    parser.add_argument("--mor_rope_depth_shift", action="store_true",
+                        help="Enable depth-dependent RoPE shift across recursion depth.")
+    parser.add_argument("--mor_rope_depth_shift_scale", type=float, default=None,
+                        help="Scale for RoPE depth shift: shift per depth = round(scale * depth).")
+
     args: argparse.Namespace = parser.parse_args()
 
     # Call the config creation and saving function

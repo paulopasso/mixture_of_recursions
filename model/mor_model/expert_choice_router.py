@@ -91,6 +91,17 @@ class MoRLlamaDecoderLayer(nn.Module):
         self.capacity_factor = capacity_factor
         self.cap_warmup_step = cap_warmup_step  # warm_up step for capacity_factor
         
+        # Optional depth embedding for recursion tracking
+        depth_embed_dim = getattr(cfg.mor, "depth_embed_dim", config.hidden_size)
+        self.depth_embed_strategy = getattr(cfg.mor, "depth_embed_strategy", "add")
+        self.use_depth_embedding = getattr(cfg.mor, "use_depth_embedding", True) and self.depth_embed_strategy != "none"
+        if self.use_depth_embedding:
+            self.depth_embedding = nn.Embedding(cfg.recursive.num_recursion, depth_embed_dim)
+            if self.depth_embed_strategy == "add" and depth_embed_dim != config.hidden_size:
+                self.depth_add_proj = nn.Linear(depth_embed_dim, config.hidden_size)
+            elif self.depth_embed_strategy == "concat":
+                self.depth_concat_proj = nn.Linear(config.hidden_size + depth_embed_dim, config.hidden_size)
+        
         torch_dtype = get_torch_dtype(cfg)
         for blk in self.block:
             blk.self_attn = MoRLlamaAttention(config, blk.self_attn.layer_idx).to(torch_dtype)
@@ -130,10 +141,27 @@ class MoRLlamaDecoderLayer(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         prev_selected_tokens: Optional[torch.LongTensor] = None,
+        recursion_depth: Optional[int] = None,  # Add recursion depth parameter
         **kwargs: Unpack[FlashAttentionKwargs]
     ):          
         total_x = x
         bs, seq_len, hidden_dim = total_x.shape
+        
+        # Apply depth embedding if enabled
+        if recursion_depth is not None and getattr(self, "use_depth_embedding", False):
+            depth_emb = self.depth_embedding(torch.tensor(recursion_depth, device=x.device))
+            if self.depth_embed_strategy == "add":
+                de = depth_emb
+                if hasattr(self, "depth_add_proj"):
+                    de = self.depth_add_proj(de)
+                x = x + de.to(x.dtype).unsqueeze(0).unsqueeze(0)
+            elif self.depth_embed_strategy == "concat":
+                de = depth_emb.to(x.dtype).unsqueeze(0).unsqueeze(0).expand(bs, seq_len, -1)
+                x = self.depth_concat_proj(torch.cat([x, de], dim=-1))
+            elif self.depth_embed_strategy == "none":
+                pass
+            else:
+                raise ValueError(f"Unknown depth_embed_strategy: {self.depth_embed_strategy}")
         
         if self.training:
             self.training_step += 1
