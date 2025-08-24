@@ -18,7 +18,7 @@ DEFAULT_MODEL_NAME_OR_PATH = {
     "smollm-360m": "HuggingFaceTB/SmolLM-360M",
     "smollm-800m": "HuggingFaceTB/SmolLM-1.7B",
     "smollm-1.7b": "HuggingFaceTB/SmolLM-1.7B",
-    "smollm": "HuggingFaceTB/SmolLM-360M",
+    "smollm": "HuggingFaceTB/SmolLM-135M",
     "smollm2-360m": "HuggingFaceTB/SmolLM2-360M",
     "tinyllama": "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
     "gemma-2b": "google/gemma-2b",
@@ -69,6 +69,11 @@ def generate_configs(args: argparse.Namespace):
             conf.tokenizer = model_name
             if args.model_name_or_path is None:
                 args.model_name_or_path = DEFAULT_MODEL_NAME_OR_PATH[cand]
+                # Prefer local lightweight checkpoint when available
+                if model_name == "smollm" and ("SmolLM-135M" in args.model_name_or_path):
+                    local_135m = os.path.join(PROJECT_ROOT, "hf_local", "SmolLM-135M")
+                    if os.path.isdir(local_135m):
+                        args.model_name_or_path = local_135m
             found = True; break
     if not found:
         raise ValueError(f"Model name must contain one of {candidates}")
@@ -273,7 +278,7 @@ def generate_configs(args: argparse.Namespace):
 
     # update expert alpha
     if conf.mor.type == "expert" and "alpha" in conf.name:
-        match = re.search(r"alpha_(\d+\.\d+)", conf.name)
+        match = re.search(r"alpha_([0-9]*\.?[0-9]+(?:e[-+]?\d+)?)", conf.name)
         if match:
             conf.mor.expert.alpha = float(match.group(1))
         else:
@@ -293,7 +298,7 @@ def generate_configs(args: argparse.Namespace):
 
     # update sampling coefficient for aux_loss
     if "aux_loss" in conf.name:
-        match = re.search(r"aux_loss_(\d+\.\d+)", conf.name)
+        match = re.search(r"aux_loss_([0-9]*\.?[0-9]+(?:e[-+]?\d+)?)", conf.name)
         if match:
             conf.mor.expert.coeff = float(match.group(1))
         else:
@@ -303,7 +308,7 @@ def generate_configs(args: argparse.Namespace):
     # update zloss
     if "zloss" in conf.name:
         conf.mor.z_loss = True
-        match = re.search(r"zloss_(\d+\.\d+)", conf.name)
+        match = re.search(r"zloss_([0-9]*\.?[0-9]+(?:e[-+]?\d+)?)", conf.name)
         if match:
             conf.mor.z_coeff = float(match.group(1))
         else:

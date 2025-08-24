@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 from transformers import AutoTokenizer
+from paths import PROJECT_ROOT
 
 # Determine offline/local behavior from env; default to allowing downloads
 WANDB_MODE = os.environ.get("WANDB_MODE", "").lower()
@@ -9,25 +10,22 @@ HF_OFFLINE = os.environ.get("HF_HUB_OFFLINE", "").lower() in {"1", "true", "yes"
 TRANSFORMERS_OFFLINE = os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in {"1", "true", "yes"}
 _default_local_only = WANDB_MODE == "offline" or HF_OFFLINE or TRANSFORMERS_OFFLINE
 
-# Known local paths
-_LOCAL_TOKENIZER_PATHS = {
-    # SmolLM tokenizer cloned locally
-    "smollm": "./hf_local/SmolLM-135M",
-}
-
 
 def _load_tokenizer_by_name(name: str):
-    """Lazily construct a tokenizer by name without triggering other downloads."""
+    """Lazily construct a tokenizer by name with local-first preference when available."""
     if name == "smollm":
-        # Force local for smollm
-        return AutoTokenizer.from_pretrained(_LOCAL_TOKENIZER_PATHS["smollm"], local_files_only=True)
+        # Prefer a local lightweight model's tokenizer if present
+        local_135m = Path(PROJECT_ROOT) / "hf_local" / "SmolLM-135M"
+        if local_135m.exists():
+            return AutoTokenizer.from_pretrained(str(local_135m), local_files_only=True)
+        # Fallback to the canonical remote tokenizer
+        return AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM-360M", local_files_only=_default_local_only)
 
     # Fallback examples for other names (kept for compatibility). These will only run if requested.
     if name == "smollm2":
-        # If a local clone exists, prefer it; else respect offline toggle
-        local_clone = Path("./hf_local/SmolLM2-135M")
-        if local_clone.exists():
-            return AutoTokenizer.from_pretrained(str(local_clone), local_files_only=True)
+        local_135m_v2 = Path(PROJECT_ROOT) / "hf_local" / "SmolLM2-135M"
+        if local_135m_v2.exists():
+            return AutoTokenizer.from_pretrained(str(local_135m_v2), local_files_only=True)
         return AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M", local_files_only=_default_local_only)
 
     raise KeyError(f"Unknown tokenizer '{name}'. Add it to _load_tokenizer_by_name.")

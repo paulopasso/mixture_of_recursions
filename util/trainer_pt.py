@@ -144,6 +144,13 @@ class MoRTrainer(Trainer):
         if is_sagemaker_mp_enabled():
             self.optimizer = smp.DistributedOptimizer(self.optimizer)
 
+        # Add no-op train/eval for compatibility with Accelerate/Transformers schedule_free hooks
+        if self.optimizer is not None:
+            if not hasattr(self.optimizer, "train"):
+                self.optimizer.train = (lambda: self.optimizer)
+            if not hasattr(self.optimizer, "eval"):
+                self.optimizer.eval = (lambda: self.optimizer)
+
         return self.optimizer
         
     def create_sampling_optimizer_and_scheduler(self, num_training_steps):
@@ -213,6 +220,14 @@ class MoRTrainer(Trainer):
             self.sam_optimizer = smp.DistributedOptimizer(self.sam_optimizer)
             
         self.sam_optimizer = self.accelerator.prepare_optimizer(self.sam_optimizer)
+
+        # Add no-op train/eval for compatibility
+        if self.sam_optimizer is not None:
+            if not hasattr(self.sam_optimizer, "train"):
+                self.sam_optimizer.train = (lambda: self.sam_optimizer)
+            if not hasattr(self.sam_optimizer, "eval"):
+                self.sam_optimizer.eval = (lambda: self.sam_optimizer)
+
         return self.sam_optimizer
     
     def create_sampling_scheduler(self, num_training_steps: int, optimizer: torch.optim.Optimizer = None):
@@ -879,11 +894,7 @@ class MoRTrainer(Trainer):
         
     def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]], num_items_in_batch=None) -> torch.Tensor:
         model.train()
-        if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
-            self.optimizer.train()
-        if hasattr(self, "sam_optimizer") and self.sam_optimizer is not None \
-            and hasattr(self.sam_optimizer, "train") and callable(self.sam_optimizer.train):
-                self.sam_optimizer.train()
+        # Remove incorrect optimizer.train() calls - optimizers don't have a train() method
             
         inputs = self._prepare_inputs(inputs)        
 

@@ -34,22 +34,97 @@ TOKENIZED_DATASETS = {
 }
 
 
+def _is_local_json_source(path_str: str) -> bool:
+    if os.path.isfile(path_str):
+        return path_str.endswith(".json") or path_str.endswith(".jsonl")
+    if os.path.isdir(path_str):
+        # Check if directory contains json/jsonl files
+        has_jsonl = any(f.endswith(".jsonl") for f in os.listdir(path_str))
+        has_json = any(f.endswith(".json") for f in os.listdir(path_str))
+        return has_jsonl or has_json
+    return False
+
+
+def _load_local_json_dataset(path_str: str):
+    """Load a local JSON/JSONL file or directory as a streaming HF dataset."""
+    if os.path.isfile(path_str):
+        data_files = path_str
+    elif os.path.isdir(path_str):
+        # Prefer jsonl if present, else json
+        if any(f.endswith(".jsonl") for f in os.listdir(path_str)):
+            data_files = os.path.join(path_str, "*.jsonl")
+        elif any(f.endswith(".json") for f in os.listdir(path_str)):
+            data_files = os.path.join(path_str, "*.json")
+        else:
+            raise ValueError(f"No .json or .jsonl files found in directory: {path_str}")
+    else:
+        raise ValueError(f"Path does not exist: {path_str}")
+
+    ds = load_dataset("json", data_files=data_files, split="train", streaming=True)
+    return ds
+
+
+def _ensure_text_column(ds, cfg):
+    """Ensure dataset has a 'text' column by renaming if necessary."""
+    # For streaming datasets, we can't easily check columns, so we'll try a different approach
+    # First, check if user specified a text field
+    text_field = getattr(cfg, "dataset_text_field", None)
+    if text_field and text_field != "text":
+        try:
+            return ds.rename_column(text_field, "text")
+        except Exception as e:
+            print(f"Warning: Could not rename column '{text_field}' to 'text': {e}")
+            return ds
+    
+    # If no text field specified, try to peek at the data to see what columns exist
+    try:
+        # Take a small sample to check columns
+        sample = next(iter(ds.take(1)))
+        available_columns = set(sample.keys())
+        
+        if "text" in available_columns:
+            # Already has text column, no renaming needed
+            return ds
+        
+        # Check for common alternatives and rename the first one found
+        for alt in ["content", "document", "raw_text", "input", "data"]:
+            if alt in available_columns:
+                print(f"Renaming column '{alt}' to 'text'")
+                return ds.rename_column(alt, "text")
+        
+        # If we get here, warn about missing text column
+        print(f"Warning: No suitable text column found. Available columns: {available_columns}")
+        return ds
+        
+    except Exception as e:
+        print(f"Warning: Could not check dataset columns: {e}")
+        # As a fallback, assume the dataset is already correct
+        return ds
+
+
 def load_dataset_from_config(cfg, tokenizer):
     dataset_name = cfg.dataset.split(',')
     dataset_name = [ds.strip() for ds in dataset_name]
     if len(dataset_name) > 1:
-        assert all(ds in LM_DATASETS for ds in dataset_name), "Only LM datasets can be combined"
+        # Allow mixing known LM_DATASETS with local json paths
+        assert all((ds in LM_DATASETS) or _is_local_json_source(ds) for ds in dataset_name), "Only LM datasets or local JSON paths can be combined"
         assert "weights" in cfg, "When combining datasets, weights must be provided"
         assert len(dataset_name) == len(cfg.weights.split(',')), "Number of weights must match number of datasets"
     
-    if all(ds in LM_DATASETS for ds in dataset_name):
+    if all(ds in LM_DATASETS for ds in dataset_name) or all((ds in LM_DATASETS) or _is_local_json_source(ds) for ds in dataset_name):
         dataset_type = "lm"
         
         train_dataset = []
-        for ds in dataset_name:
-            _dataset = load_dataset(**LM_DATASETS[ds], streaming=True)
-            if ds == "starcoderdata":
-                _dataset.rename_column("content", "text")
+        for ds_name in dataset_name:
+            if ds_name in LM_DATASETS:
+                _dataset = load_dataset(**LM_DATASETS[ds_name], streaming=True)
+                if ds_name == "starcoderdata":
+                    _dataset = _dataset.rename_column("content", "text")
+            elif _is_local_json_source(ds_name):
+                _dataset = _load_local_json_dataset(ds_name)
+                _dataset = _ensure_text_column(_dataset, cfg)
+            else:
+                raise ValueError(f"Unsupported dataset specifier: {ds_name}")
             train_dataset.append(_dataset)
         
         if len(train_dataset) == 1:

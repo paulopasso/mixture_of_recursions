@@ -67,8 +67,8 @@ class MoRLlamaDecoderLayer(nn.Module):
             if isinstance(block, nn.ModuleList):
                 for blk in block:
                     blk.set_activation_checkpointing(strategy)
-        else:
-            block.set_activation_checkpointing(strategy)
+            else:
+                block.set_activation_checkpointing(strategy)
         
     def select_tokens_and_batch_with_padding(
         self,
@@ -108,67 +108,80 @@ class MoRLlamaDecoderLayer(nn.Module):
         new_bs, new_seq_len, _ = batched_x.shape
         bs, seq_len, _ = x.shape
                 
-        new_attention_mask = torch.zeros(
-            (new_bs, new_seq_len),
-            dtype=x.dtype,
-            device=x.device,
-        )
-        for b in range(new_bs):
-            indices = selected_seq_indices[b]
-            s = indices.numel()
-            
-            new_attention_mask[b, :s] = 1
-            
-        if attention_mask is not None: 
+        # Build new attention mask by subselecting per-batch tokens
+        new_attention_mask = None
+        if attention_mask is not None:
             if attention_mask.dim() == 4:
-                new_attention_mask = torch.ones(
+                # [bs, 1, seq_len, seq_len] additive mask
+                new_attention_mask = torch.full(
                     (new_bs, 1, new_seq_len, new_seq_len),
+                    fill_value=torch.finfo(attention_mask.dtype).min,
                     dtype=attention_mask.dtype,
                     device=attention_mask.device,
-                ) * torch.finfo(attention_mask.dtype).min
-                
-                for b in range(new_bs):
+                )
+                for b, batch_idx in enumerate(selected_batch_indices):
                     indices = selected_seq_indices[b]
                     s = indices.numel()
-                    
-                    _mask = torch.gather(attention_mask, 2, indices.view(1, 1, s, 1).expand(bs, 1, s, seq_len))
-                    _mask = torch.gather(_mask, 3, indices.view(1, 1, 1, s).expand(bs, 1, s, s))
-                    new_attention_mask[b, :, :s, :s] = _mask                
+                    base = attention_mask[batch_idx:batch_idx+1]  # [1, 1, S, S]
+                    sub = torch.index_select(base, 2, indices)     # [1, 1, s, S]
+                    sub = torch.index_select(sub, 3, indices)      # [1, 1, s, s]
+                    new_attention_mask[b, :, :s, :s] = sub[0]
             elif attention_mask.dim() == 2:
-                pass
-            else: 
+                # [bs, seq_len] mask
+                new_attention_mask = torch.zeros(
+                    (new_bs, new_seq_len),
+                    dtype=attention_mask.dtype,
+                    device=attention_mask.device,
+                )
+                for b, batch_idx in enumerate(selected_batch_indices):
+                    indices = selected_seq_indices[b]
+                    s = indices.numel()
+                    new_attention_mask[b, :s] = attention_mask[batch_idx, indices]
+            else:
                 raise NotImplementedError("Attention mask has unexpected dimensions")
         
+        # Preserve and subset position_ids when provided
         new_position_ids = None
         if position_ids is not None:
-            new_position_ids = torch.arange(new_seq_len, dtype=torch.long, device=x.device).unsqueeze(0).to(position_ids.device)
+            new_position_ids = torch.zeros(
+                (new_bs, new_seq_len), dtype=position_ids.dtype, device=position_ids.device
+            )
+            for b, batch_idx in enumerate(selected_batch_indices):
+                indices = selected_seq_indices[b]
+                s = indices.numel()
+                new_position_ids[b, :s] = position_ids[batch_idx, indices]
         
+        # Subset position embeddings, with optional RoPE depth shift per recursion index
         new_position_embeddings = None                
         if position_embeddings is not None:
-            head_dim = position_embeddings[0].shape[-1]            
-            new_position_embeddings = ()
-            
             # Optional RoPE depth shift per recursion index
             rope_shift = 0
             if getattr(self.cfg.mor, "rope_depth_shift", False):
                 scale = float(getattr(self.cfg.mor, "rope_depth_shift_scale", 1.0))
                 rope_shift = int(round(scale * (index or 0)))
             
-            for i, emb in enumerate(position_embeddings):
-                new_position_embeddings += (torch.zeros(
+            new_position_embeddings = ()
+            for emb in position_embeddings:
+                head_dim = emb.shape[-1]
+                new_emb = torch.zeros(
                     (new_bs, new_seq_len, head_dim),
                     dtype=emb.dtype,
                     device=emb.device,
-                ),)
-                # emb is shape (1, seq, head_dim) typically
-                base_seq_emb = emb[0]
-                if rope_shift != 0:
-                    base_seq_emb = torch.roll(base_seq_emb, shifts=rope_shift, dims=0)
-                for b in range(new_bs):
+                )
+                for b, batch_idx in enumerate(selected_batch_indices):
                     indices = selected_seq_indices[b]
                     s = indices.numel()
-                    new_position_embeddings[i][b, :s] = torch.gather(base_seq_emb, dim=0, index=indices.view(s, 1).expand(-1, head_dim))
+                    # emb could be [1, S, H] or [bs, S, H]
+                    if emb.shape[0] == 1:
+                        base_seq_emb = emb[0]
+                    else:
+                        base_seq_emb = emb[batch_idx]
+                    if rope_shift != 0:
+                        base_seq_emb = torch.roll(base_seq_emb, shifts=rope_shift, dims=0)
+                    new_emb[b, :s] = torch.index_select(base_seq_emb, 0, indices)
+                new_position_embeddings += (new_emb,)
         
+        # Subset cache positions per batch
         new_cache_position = None                    
         if cache_position is not None:
             new_cache_position = torch.zeros(
@@ -176,11 +189,14 @@ class MoRLlamaDecoderLayer(nn.Module):
                 dtype=cache_position.dtype,
                 device=cache_position.device,
             )
-            for b in range(new_bs):
+            for b, batch_idx in enumerate(selected_batch_indices):
                 indices = selected_seq_indices[b]
                 s = indices.numel()
-                
-                new_cache_position[b, :s] = torch.gather(cache_position, dim=0, index=indices)
+                if cache_position.dim() == 2 and cache_position.size(0) == bs:
+                    new_cache_position[b, :s] = cache_position[batch_idx, indices]
+                else:
+                    # fallback: assume [seq_len]
+                    new_cache_position[b, :s] = cache_position[indices]
         
         return batched_x, new_attention_mask, new_position_ids, new_cache_position, new_position_embeddings, selected_batch_indices, selected_seq_indices
 
@@ -226,7 +242,7 @@ class MoRLlamaDecoderLayer(nn.Module):
             # Top-1 token-choice routing
             router_weights = self.mor_router(x / self.cfg.mor.temp) 
             if "router_func" in self.cfg.mor.token and self.cfg.mor.token.router_func == "sigmoid":
-                router_probs = _router_probs = F.sigmoid(router_weights) * self.cfg.mor.token.get("alpha", 0.1) 
+                router_probs = _router_probs = torch.sigmoid(router_weights) * self.cfg.mor.token.get("alpha", 0.1) 
             else:
                 router_probs = _router_probs = F.softmax(router_weights, dim=-1) * self.cfg.mor.token.get("alpha", 1.0)
             

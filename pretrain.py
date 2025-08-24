@@ -16,6 +16,38 @@ from copy import deepcopy
 from transformers import TrainingArguments, Trainer
 from accelerate import Accelerator
 
+# Backward-compatibility: patch Accelerator.unwrap_model to accept keep_torch_compile if missing
+try:
+    import inspect
+    if "keep_torch_compile" not in inspect.signature(Accelerator.unwrap_model).parameters:
+        _orig_unwrap = Accelerator.unwrap_model
+        def _unwrap_model_compat(self, *args, keep_torch_compile=False, **kwargs):
+            return _orig_unwrap(self, *args, **kwargs)
+        Accelerator.unwrap_model = _unwrap_model_compat
+except Exception:
+    pass
+
+# Backward-compatibility: some Accelerate versions expect optimizers to expose train()/eval().
+# Standard torch optimizers don't implement these; safely no-op if missing to avoid AttributeError.
+try:
+    from accelerate.optimizer import AcceleratedOptimizer
+    def _safe_train(self):
+        opt = getattr(self, "optimizer", None)
+        # call through when available (e.g., schedule_free), else no-op and return self
+        if opt is not None and hasattr(opt, "train"):
+            return opt.train()
+        return self
+    def _safe_eval(self):
+        opt = getattr(self, "optimizer", None)
+        if opt is not None and hasattr(opt, "eval"):
+            return opt.eval()
+        return self
+    # Patch methods
+    AcceleratedOptimizer.train = _safe_train
+    AcceleratedOptimizer.eval = _safe_eval
+except Exception:
+    pass
+
 from lm_dataset.load_dataset import LM_DATASETS, load_dataset_from_config 
 from model.util import load_model_from_config
 from model.sharing_strategy import SHARING_STRATEGY
@@ -27,7 +59,7 @@ from util.callback import FixedStoppingCallback, EvalCallback, PeftSaveCallback,
 from util.misc import print_trainable_parameters, get_latest_checkpoint_path, print_rank_zero, get_launcher_type; print_rank_zero()
 
 
-@hydra.main(config_path="conf/pretrain", config_name="yymmdd_pretrain")
+@hydra.main(config_path="conf/pretrain", config_name="yymmdd_pretrain", version_base=None)
 def main(cfg: DictConfig):
     cfg = preprocess_config(cfg)
     
@@ -83,7 +115,7 @@ def main(cfg: DictConfig):
                 latest_checkpoint = get_latest_checkpoint_path(cfg, resume_step=cfg.resume_step if ("resume_step" in cfg and cfg.resume_step is not None) else None)                
                 state_dict = torch.load(os.path.join(str(latest_checkpoint), "pytorch_model.bin"))
                 model.get_base_model().load_state_dict(state_dict)
-                
+    print("1 good")            
     if "mor" in cfg and cfg.mor.get("enable"):            
         if cfg.mor.type == "expert":
             model.transform_layer_to_mor_expert(cfg)
@@ -100,6 +132,9 @@ def main(cfg: DictConfig):
     if cfg.tensorboard:
         report_to.append("tensorboard")
     
+    # Determine save strategy safely: if save_steps is not provided, disable step-based saving
+    save_strategy = "steps" if cfg.get("save_steps") is not None else "no"
+    print("2 good")     
     train_args = TrainingArguments(
         lr_scheduler_type=cfg.get("lr_scheduler_type", "cosine_with_min_lr"),
         lr_scheduler_kwargs=dict(cfg.get("lr_scheduler_kwargs", {"min_lr_rate": 0.1,})),
@@ -112,6 +147,7 @@ def main(cfg: DictConfig):
         max_steps=cfg.num_train_steps,
         warmup_steps=cfg.num_warmup_steps,
         logging_steps=cfg.logging_steps,
+        save_strategy=save_strategy,
         save_steps=cfg.save_steps,
         save_total_limit=cfg.save_total_limit,
         save_safetensors=False if launcher_type == "accelerate" else True,
@@ -127,18 +163,21 @@ def main(cfg: DictConfig):
         logging_dir=cfg.tensorboard_dir,
         deepspeed=cfg.deepspeed if launcher_type == "deepspeed" else None,
         log_on_each_node=False,
+        optim=cfg.get("optim", "adamw_torch"),
     )
-    
+    print("3 good")     
     callbacks = []
     fixed_save_steps = cfg.fixed_save_steps if ("fixed_save_steps" in cfg and cfg.fixed_save_steps) else None
     if cfg.stop_steps is not None:
         callbacks.append(FixedStoppingCallback(cfg.stop_steps))
     if "evaluation" in cfg and cfg.evaluation.enable:
         callbacks.append(EvalCallback(cfg, tokenizer))
-    if cfg.relaxation.get("enable") and cfg.relaxation.method in ["lora", "dora", "adaption_prompt"]:
-        callbacks.append(PeftSaveCallback(cfg.save_steps, fixed_save_steps=fixed_save_steps))
-    if all(ds in LM_DATASETS for ds in cfg.dataset.split(',')):
-        callbacks.append(DatasetSaveCallback(cfg.save_steps, fixed_save_steps=fixed_save_steps))
+    # Only add save-related callbacks if saving is enabled
+    if save_strategy == "steps":
+        if cfg.get("relaxation") and cfg.relaxation.get("enable") and cfg.relaxation.method in ["lora", "dora", "adaption_prompt"]:
+            callbacks.append(PeftSaveCallback(cfg.save_steps, fixed_save_steps=fixed_save_steps))
+        if all(ds in LM_DATASETS for ds in cfg.dataset.split(',')):
+            callbacks.append(DatasetSaveCallback(cfg.save_steps, fixed_save_steps=fixed_save_steps))
     if fixed_save_steps is not None:
         callbacks.append(ScalingLawsSaveCallback(fixed_save_steps,))
         

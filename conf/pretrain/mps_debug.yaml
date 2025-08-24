@@ -15,7 +15,8 @@ resume_from_checkpoint: false
 resume_step: null
 
 # Small, remote dataset for quick debugging
-dataset: wikitext2
+# dataset: wikitext2
+dataset: /Users/paulruiz/data/mor/local_corpus
 weights: null
 
 # Data budgets to limit runtime (adapt the data, not the model)
@@ -24,7 +25,7 @@ data_batch_budget: 1000 # or 1000 batches, whichever comes first
 
 total_batch_size: 8
 per_device_train_batch_size: 2
-# gradient_accumulation_steps computed from total_batch_size
+gradient_accumulation_steps: null # will be computed from total_batch_size
 batch_size_rampup_steps: null
 max_length: 512
 add_bos_token: false
@@ -33,7 +34,7 @@ local_shuffling: false
 tokenizer: smollm
 
 model: smollm
-model_name_or_path: HuggingFaceTB/SmolLM-360M
+model_name_or_path: hf_local/SmolLM-135M
 model_config: null
 attn_implementation: sdpa
 use_pretrained_weights: true

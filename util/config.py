@@ -28,7 +28,8 @@ def preprocess_config(cfg: DictConfig):
         if cfg.get("gradient_accumulation_steps") is not None:
             raise ValueError("Cannot specify both total_batch_size and gradient_accumulation_steps")
         if cfg.get("per_device_train_batch_size") is not None:
-            cfg.gradient_accumulation_steps = round(cfg.total_batch_size / (cfg.per_device_train_batch_size * n_gpus))
+            with open_dict(cfg):
+                cfg.gradient_accumulation_steps = round(cfg.total_batch_size / (cfg.per_device_train_batch_size * n_gpus))
             print(f"total_batch_size              : {cfg.total_batch_size} (given)")
             print(f"torch.cuda.device_count()     : {n_gpus}")
             print(f"per_device_train_batch_size   : {cfg.per_device_train_batch_size} (given)")
@@ -36,7 +37,8 @@ def preprocess_config(cfg: DictConfig):
             actual_total = cfg.per_device_train_batch_size * cfg.gradient_accumulation_steps * n_gpus
             print(f"actual total batch size       : {actual_total}")
         else:
-            cfg.per_device_train_batch_size = round(cfg.total_batch_size / n_gpus)
+            with open_dict(cfg):
+                cfg.per_device_train_batch_size = round(cfg.total_batch_size / n_gpus)
             print(f"total_batch_size              : {cfg.total_batch_size} (given)")
             print(f"torch.cuda.device_count()     : {n_gpus}")
             print(f"per_device_train_batch_size   : {cfg.per_device_train_batch_size} (computed)")
@@ -85,12 +87,19 @@ def preprocess_config(cfg: DictConfig):
         if cfg.get("save_steps") is not None:
             warning = f"save_interval ({cfg.save_interval}) will be used instead of save_steps ({cfg.save_steps})"
             warnings.warn(warning)
-            
-        cfg.save_steps = max(int(cfg.num_train_steps * cfg.save_interval), 0)
+        # compute tentative steps
+        tentative_steps = int(cfg.num_train_steps * cfg.save_interval)
+        # if zero or negative, disable saving; otherwise clamp to at least 1
+        if tentative_steps <= 0:
+            warnings.warn("Computed save_steps <= 0 from save_interval; disabling checkpoint saving.")
+            cfg.save_steps = None
+        else:
+            cfg.save_steps = max(tentative_steps, 1)
         
     # Check stop_steps and save_steps
-    if cfg.get("stop_steps") is not None and cfg.get("save_steps") is not None:
-        if cfg.stop_steps % cfg.save_steps != 0:
+    if cfg.get("stop_steps") is not None and cfg.get("save_steps"):
+        # Only check divisibility if save_steps is a positive int
+        if isinstance(cfg.save_steps, int) and cfg.save_steps > 0 and cfg.stop_steps % cfg.save_steps != 0:
             warning = f"stop_steps ({cfg.stop_steps}) is not divisible by save_steps ({cfg.save_steps})"
             warnings.warn(warning)
             

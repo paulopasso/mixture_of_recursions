@@ -33,7 +33,7 @@ local_shuffling: true
 tokenizer: smollm
 
 model: smollm
-model_name_or_path: HuggingFaceTB/SmolLM-360M
+model_name_or_path: hf_local/SmolLM-135M
 model_config: null
 attn_implementation: sdpa
 use_pretrained_weights: true

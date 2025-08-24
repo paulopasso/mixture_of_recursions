@@ -24,11 +24,18 @@ MOR_MODEL_CLS = {
     "smollm2": MoRLlamaForCausalLM,
 }
 
-# Use WANDB_MODE if present; default to allowing downloads (local_files_only=False)
-if "WANDB_MODE" in os.environ:
-    local_files_only = os.environ["WANDB_MODE"].lower() == "offline"
-else:
-    local_files_only = False
+
+def _compute_local_files_only(cfg: DictConfig) -> bool:
+    """Determine whether to force local file usage.
+    Priority: cfg.local_files_only if set, else env vars, else False.
+    Mirrors logic used in util/tokenizer.py for consistency.
+    """
+    if hasattr(cfg, "local_files_only") and cfg.local_files_only is not None:
+        return bool(cfg.local_files_only)
+    wandb_mode = os.environ.get("WANDB_MODE", "").lower()
+    hf_offline = os.environ.get("HF_HUB_OFFLINE", "").lower() in {"1", "true", "yes"}
+    transformers_offline = os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in {"1", "true", "yes"}
+    return wandb_mode == "offline" or hf_offline or transformers_offline
 
 
 def get_torch_dtype(cfg: DictConfig):
@@ -52,6 +59,7 @@ def load_model_from_config(cfg: DictConfig):
         
     attn_implementation = cfg.get("attn_implementation", "flash_attention_2")
     torch_dtype = get_torch_dtype(cfg)
+    local_files_only = _compute_local_files_only(cfg)
     
     if cfg.use_pretrained_weights:
         print("Loading model from pretrained weights...")
